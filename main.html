@@ -1,0 +1,727 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Сапер на сфере</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        #info {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            background: rgba(0,0,0,0.7);
+            padding: 10px 20px;
+            border-radius: 8px;
+            pointer-events: none;
+            user-select: none;
+            z-index: 10;
+            font-size: 16px;
+        }
+        #controls {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(0,0,0,0.8);
+            padding: 16px;
+            border-radius: 8px;
+            color: white;
+            z-index: 10;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            font-size: 14px;
+            width: 220px;
+            backdrop-filter: blur(4px);
+        }
+        #controls button {
+            background: #3b7be0;
+            color: white;
+            border: none;
+            padding: 10px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 15px;
+            font-weight: 600;
+            transition: background 0.2s;
+        }
+        #controls button:hover {
+            background: #5590f0;
+        }
+        #controls label {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            user-select: none;
+        }
+        .slider-container {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .slider-container span {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: #aabbcc;
+        }
+        input[type=range] {
+            width: 100%;
+            cursor: pointer;
+        }
+        #status {
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: white;
+            background: rgba(0,0,0,0.8);
+            padding: 12px 28px;
+            border-radius: 8px;
+            font-size: 18px;
+            font-weight: 600;
+            z-index: 10;
+            display: none;
+            backdrop-filter: blur(4px);
+        }
+        #status.show { display: block; }
+    </style>
+</head>
+<body>
+    <div id="info">💣 Сапер на сфере · <span id="mineCount">0</span> мин · <span id="flagCount">0</span> флагов</div>
+    <div id="controls">
+        <button id="resetBtn">Новая игра</button>
+        
+        <div class="slider-container">
+            <span>Широта (рядов): <span id="latVal">14</span></span>
+            <input type="range" id="latRange" min="8" max="30" step="2" value="14">
+        </div>
+
+        <div class="slider-container">
+            <span>Долгота (колонок): <span id="lonVal">24</span></span>
+            <input type="range" id="lonRange" min="12" max="48" step="4" value="24">
+        </div>
+
+        <div class="slider-container">
+            <span>Бомб (%): <span id="mineVal">15</span></span>
+            <input type="range" id="mineRange" min="5" max="30" step="1" value="15">
+        </div>
+
+        <label><input type="checkbox" id="flagMode"> Режим флагов (левый клик)</label>
+    </div>
+    <div id="status"></div>
+    
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.128.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'https://unpkg.com/three@0.128.0/examples/jsm/controls/OrbitControls.js';
+
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x0a0a1a);
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 3, 9);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.body.appendChild(renderer.domElement);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.08;
+        controls.enablePan = false;
+        controls.minDistance = 4;
+        controls.maxDistance = 18;
+
+        scene.add(new THREE.AmbientLight(0x8899bb, 0.9));
+
+        const keyLight = new THREE.DirectionalLight(0xffffff, 1.2);
+        keyLight.position.set(5, 8, 5);
+        scene.add(keyLight);
+
+        const fillLight = new THREE.DirectionalLight(0x6688ff, 0.5);
+        fillLight.position.set(-5, -3, -5);
+        scene.add(fillLight);
+
+        const rimLight = new THREE.PointLight(0xffaa66, 0.6, 30);
+        rimLight.position.set(-6, 4, -6);
+        scene.add(rimLight);
+
+        const R = 3.0;
+        let LAT_SEGMENTS = 14;
+        let LON_SEGMENTS = 24;
+        const tileDepth = 0.15;
+        const gapFactor = 0.92;
+        let MINE_RATIO = 0.15;
+
+        function sphToVec(phi, theta, radius) {
+            return new THREE.Vector3(
+                radius * Math.sin(phi) * Math.cos(theta),
+                radius * Math.cos(phi),
+                radius * Math.sin(phi) * Math.sin(theta)
+            );
+        }
+
+        function buildTileGeometry(phi1, phi2, theta1, theta2, radius, depth) {
+            const positions = [];
+            const uvs = [];
+            const indices = [];
+
+            const p00 = sphToVec(phi1, theta1, radius);
+            const p10 = sphToVec(phi2, theta1, radius);
+            const p11 = sphToVec(phi2, theta2, radius);
+            const p01 = sphToVec(phi1, theta2, radius);
+
+            const topCorners = [p00, p10, p11, p01];
+            const botCorners = topCorners.map(v => {
+                const n = v.clone().normalize();
+                return n.clone().multiplyScalar(radius - depth);
+            });
+
+            for (let i = 0; i < 4; i++) {
+                positions.push(topCorners[i].x, topCorners[i].y, topCorners[i].z);
+            }
+            
+            uvs.push(1, 1, 1, 0, 0, 0, 0, 1); 
+            indices.push(0, 2, 1, 0, 3, 2);
+
+            const baseTop = 4;
+            for (let i = 0; i < 4; i++) {
+                positions.push(botCorners[i].x, botCorners[i].y, botCorners[i].z);
+            }
+            uvs.push(1, 1, 1, 0, 0, 0, 0, 1);
+            indices.push(baseTop+0, baseTop+1, baseTop+2, baseTop+0, baseTop+2, baseTop+3);
+
+            for (let i = 0; i < 4; i++) {
+                const a = i;
+                const b = (i + 1) % 4;
+                const base = positions.length / 3;
+                positions.push(
+                    topCorners[a].x, topCorners[a].y, topCorners[a].z,
+                    topCorners[b].x, topCorners[b].y, topCorners[b].z,
+                    botCorners[b].x, botCorners[b].y, botCorners[b].z,
+                    botCorners[a].x, botCorners[a].y, botCorners[a].z
+                );
+                indices.push(base, base+1, base+2, base, base+2, base+3);
+            }
+
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+            geo.setIndex(indices);
+            geo.computeVertexNormals();
+            return geo;
+        }
+
+        // Новая генерация цельного полюса с правильными UV (одна текстура на весь купол)
+        function buildSinglePoleGeometry(phi, radius, depth, isTop) {
+            const positions = [];
+            const uvs = [];
+            const indices = [];
+
+            const steps = 32; 
+            const topPos = isTop ? new THREE.Vector3(0, radius, 0) : new THREE.Vector3(0, -radius, 0);
+            const topCenterInner = topPos.clone().normalize().multiplyScalar(radius - depth);
+
+            positions.push(topPos.x, topPos.y, topPos.z);
+            uvs.push(0.5, 0.5);
+
+            for (let i = 0; i <= steps; i++) {
+                const theta = (i / steps) * Math.PI * 2;
+                const p = sphToVec(phi, theta, radius);
+                positions.push(p.x, p.y, p.z);
+                
+                // Растягиваем UV на весь купол
+                const u = 0.5 + 0.5 * Math.sin(theta);
+                const v = 0.5 + 0.5 * Math.cos(theta);
+                uvs.push(u, v);
+            }
+
+            for (let i = 1; i <= steps; i++) {
+                if (isTop) indices.push(0, i + 1, i);
+                else indices.push(0, i, i + 1);
+            }
+
+            const baseOffset = positions.length / 3;
+            positions.push(topCenterInner.x, topCenterInner.y, topCenterInner.z);
+            uvs.push(0.5, 0.5);
+
+            for (let i = 0; i <= steps; i++) {
+                const theta = (i / steps) * Math.PI * 2;
+                const p = sphToVec(phi, theta, radius - depth);
+                positions.push(p.x, p.y, p.z);
+                
+                const u = 0.5 + 0.5 * Math.sin(theta);
+                const v = 0.5 + 0.5 * Math.cos(theta);
+                uvs.push(u, v);
+            }
+
+            for (let i = 1; i <= steps; i++) {
+                if (isTop) indices.push(baseOffset, baseOffset + i, baseOffset + i + 1);
+                else indices.push(baseOffset, baseOffset + i + 1, baseOffset + i);
+            }
+
+            for (let i = 1; i <= steps; i++) {
+                const next = i === steps ? 1 : i + 1;
+                const a = i, b = next;
+                const c = baseOffset + next, d = baseOffset + i;
+                
+                if (isTop) {
+                    indices.push(a, b, c, a, c, d);
+                } else {
+                    indices.push(a, c, b, a, d, c);
+                }
+            }
+
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+            geo.setIndex(indices);
+            geo.computeVertexNormals();
+            return geo;
+        }
+
+        const hiddenMaterial = new THREE.MeshStandardMaterial({
+            color: 0x3b7be0,
+            roughness: 0.55,
+            metalness: 0.25,
+            emissive: 0x0a1a3a,
+            emissiveIntensity: 0.5,
+            flatShading: true,
+            side: THREE.DoubleSide
+        });
+
+        const revealedMaterial = new THREE.MeshStandardMaterial({
+            color: 0xc8d4e8,
+            roughness: 0.7,
+            metalness: 0.05,
+            emissive: 0x2a3a5a,
+            emissiveIntensity: 0.25,
+            flatShading: true,
+            side: THREE.DoubleSide
+        });
+
+        const mineMaterial = new THREE.MeshStandardMaterial({
+            color: 0xff3344,
+            roughness: 0.5,
+            metalness: 0.3,
+            emissive: 0x661111,
+            emissiveIntensity: 0.8,
+            flatShading: true,
+            side: THREE.DoubleSide
+        });
+
+        const tilesGroup = new THREE.Group();
+        scene.add(tilesGroup);
+
+        const tiles = [];
+        let totalMines = 0;
+        let flagsPlaced = 0;
+        let gameOver = false;
+        let flagMode = false;
+
+        let TOP_INDEX = -1;
+        let BOTTOM_INDEX = -1;
+
+        function getNeighbors(index) {
+            if (index === TOP_INDEX) {
+                const res = [];
+                for (let j = 0; j < LON_SEGMENTS; j++) res.push(j + 1);
+                return res;
+            }
+            if (index === BOTTOM_INDEX) {
+                const res = [];
+                const start = (LAT_SEGMENTS - 3) * LON_SEGMENTS + 1;
+                for (let j = 0; j < LON_SEGMENTS; j++) res.push(start + j);
+                return res;
+            }
+
+            const localIdx = index - 1;
+            const i = Math.floor(localIdx / LON_SEGMENTS);
+            const j = localIdx % LON_SEGMENTS;
+            const neighbors = [];
+
+            if (i === 0) {
+                neighbors.push(TOP_INDEX);
+            } else {
+                neighbors.push((i - 1) * LON_SEGMENTS + 1 + j);
+                neighbors.push((i - 1) * LON_SEGMENTS + 1 + (j - 1 + LON_SEGMENTS) % LON_SEGMENTS);
+                neighbors.push((i - 1) * LON_SEGMENTS + 1 + (j + 1) % LON_SEGMENTS);
+            }
+
+            if (i === LAT_SEGMENTS - 3) {
+                neighbors.push(BOTTOM_INDEX);
+            } else {
+                neighbors.push((i + 1) * LON_SEGMENTS + 1 + j);
+                neighbors.push((i + 1) * LON_SEGMENTS + 1 + (j - 1 + LON_SEGMENTS) % LON_SEGMENTS);
+                neighbors.push((i + 1) * LON_SEGMENTS + 1 + (j + 1) % LON_SEGMENTS);
+            }
+
+            neighbors.push(i * LON_SEGMENTS + 1 + (j - 1 + LON_SEGMENTS) % LON_SEGMENTS);
+            neighbors.push(i * LON_SEGMENTS + 1 + (j + 1) % LON_SEGMENTS);
+
+            return [...new Set(neighbors)];
+        }
+
+        function buildGrid() {
+            const phiStep = Math.PI / LAT_SEGMENTS;
+            const thetaStep = (Math.PI * 2) / LON_SEGMENTS;
+            const shrinkTheta = thetaStep * (1 - gapFactor) * 0.5;
+            const shrinkPhi = phiStep * (1 - gapFactor) * 0.5;
+
+            tilesGroup.clear();
+            tiles.length = 0;
+
+            // Верхний полюс
+            const topGeo = buildSinglePoleGeometry(phiStep - shrinkPhi, R, tileDepth, true);
+            const topTile = new THREE.Mesh(topGeo, hiddenMaterial.clone());
+            topTile.userData = {
+                row: 0, col: 0, isRevealed: false, isMine: false, isFlagged: false,
+                adjacentMines: 0, index: 0
+            };
+            tilesGroup.add(topTile);
+            tiles.push(topTile);
+            TOP_INDEX = 0;
+
+            // Средние ряды
+            for (let i = 1; i < LAT_SEGMENTS - 1; i++) {
+                const phi1 = i * phiStep;
+                const phi2 = (i + 1) * phiStep;
+                const adjPhi1 = phi1 + shrinkPhi;
+                const adjPhi2 = phi2 - shrinkPhi;
+
+                for (let j = 0; j < LON_SEGMENTS; j++) {
+                    const theta1 = j * thetaStep;
+                    const theta2 = (j + 1) * thetaStep;
+                    const adjTheta1 = theta1 + shrinkTheta;
+                    const adjTheta2 = theta2 - shrinkTheta;
+
+                    const geo = buildTileGeometry(adjPhi1, adjPhi2, adjTheta1, adjTheta2, R, tileDepth);
+                    const tile = new THREE.Mesh(geo, hiddenMaterial.clone());
+
+                    const index = tiles.length;
+                    tile.userData = {
+                        row: i, col: j, isRevealed: false, isMine: false, isFlagged: false,
+                        adjacentMines: 0, index
+                    };
+                    tilesGroup.add(tile);
+                    tiles.push(tile);
+                }
+            }
+
+            // Нижний полюс
+            const bottomGeo = buildSinglePoleGeometry(Math.PI - phiStep + shrinkPhi, R, tileDepth, false);
+            const bottomTile = new THREE.Mesh(bottomGeo, hiddenMaterial.clone());
+            BOTTOM_INDEX = tiles.length;
+            bottomTile.userData = {
+                row: LAT_SEGMENTS - 1, col: 0, isRevealed: false, isMine: false, isFlagged: false,
+                adjacentMines: 0, index: BOTTOM_INDEX
+            };
+            tilesGroup.add(bottomTile);
+            tiles.push(bottomTile);
+        }
+
+        function resetGame() {
+            gameOver = false;
+            flagsPlaced = 0;
+            document.getElementById('status').classList.remove('show');
+
+            buildGrid();
+
+            totalMines = Math.max(1, Math.floor(tiles.length * MINE_RATIO));
+            const indices = Array.from({length: tiles.length}, (_, i) => i);
+            
+            for (let i = indices.length - 1; i > 0; i--) {
+                const k = Math.floor(Math.random() * (i + 1));
+                [indices[i], indices[k]] = [indices[k], indices[i]];
+            }
+
+            const mineIndices = new Set(indices.slice(0, totalMines));
+
+            for (const tile of tiles) {
+                tile.userData.isMine = mineIndices.has(tile.userData.index);
+            }
+
+            for (const tile of tiles) {
+                if (tile.userData.isMine) continue;
+                const neighbors = getNeighbors(tile.userData.index);
+                let count = 0;
+                for (const n of neighbors) {
+                    if (tiles[n].userData.isMine) count++;
+                }
+                tile.userData.adjacentMines = count;
+            }
+
+            updateUI();
+        }
+
+        function updateUI() {
+            document.getElementById('mineCount').textContent = totalMines - flagsPlaced;
+            document.getElementById('flagCount').textContent = flagsPlaced;
+        }
+
+        function getCanvasTexture(text, bgColor) {
+            const size = 128;
+            const canvas = document.createElement('canvas');
+            canvas.width = size;
+            canvas.height = size;
+            const ctx = canvas.getContext('2d');
+
+            ctx.fillStyle = bgColor;
+            ctx.fillRect(0, 0, size, size);
+            ctx.translate(size / 2, size / 2);
+
+            if (text === '💣') {
+                ctx.font = '80px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('💣', 0, 0);
+            } else if (text === '🚩') {
+                ctx.font = '80px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('🚩', 0, 0);
+            } else {
+                const colors = {
+                    '1': '#4488ff', '2': '#44bb44', '3': '#ff4444',
+                    '4': '#aa44ff', '5': '#ff8800', '6': '#44dddd',
+                    '7': '#ffffff', '8': '#888888'
+                };
+                ctx.fillStyle = colors[text] || '#ffffff';
+                ctx.font = 'bold 90px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(text, 0, 0);
+            }
+
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.anisotropy = 4;
+            return tex;
+        }
+
+        function revealTile(tile) {
+            if (tile.userData.isRevealed || tile.userData.isFlagged || gameOver) return;
+            tile.userData.isRevealed = true;
+
+            if (tile.userData.isMine) {
+                tile.material = mineMaterial.clone();
+                endGame(false);
+                return;
+            }
+
+            const count = tile.userData.adjacentMines;
+            if (count > 0) {
+                const tex = getCanvasTexture(String(count), '#c8d4e8');
+                const mat = new THREE.MeshStandardMaterial({
+                    map: tex, roughness: 0.7, metalness: 0.05,
+                    emissive: 0x2a3a5a, emissiveIntensity: 0.15,
+                    flatShading: true, side: THREE.DoubleSide
+                });
+                tile.material = mat;
+            } else {
+                tile.material = revealedMaterial.clone();
+                const neighbors = getNeighbors(tile.userData.index);
+                for (const n of neighbors) {
+                    if (!tiles[n].userData.isRevealed) revealTile(tiles[n]);
+                }
+            }
+
+            checkWin();
+        }
+
+        function chordTile(tile) {
+            if (!tile.userData.isRevealed || tile.userData.adjacentMines === 0 || gameOver) return;
+
+            const neighbors = getNeighbors(tile.userData.index);
+            let flaggedCount = 0;
+            for (const n of neighbors) {
+                if (tiles[n].userData.isFlagged) flaggedCount++;
+            }
+
+            if (flaggedCount === tile.userData.adjacentMines) {
+                for (const n of neighbors) {
+                    const neighborTile = tiles[n];
+                    if (!neighborTile.userData.isFlagged && !neighborTile.userData.isRevealed) {
+                        revealTile(neighborTile);
+                        if (gameOver) break;
+                    }
+                }
+            }
+        }
+
+        function toggleFlag(tile) {
+            if (tile.userData.isRevealed || gameOver) return;
+
+            if (tile.userData.isFlagged) {
+                tile.userData.isFlagged = false;
+                tile.material = hiddenMaterial.clone();
+                flagsPlaced--;
+            } else {
+                tile.userData.isFlagged = true;
+                const tex = getCanvasTexture('🚩', '#3b7be0');
+                const mat = new THREE.MeshStandardMaterial({
+                    map: tex, roughness: 0.55, metalness: 0.25,
+                    emissive: 0x0a1a3a, emissiveIntensity: 0.5,
+                    flatShading: true, side: THREE.DoubleSide
+                });
+                tile.material = mat;
+                flagsPlaced++;
+            }
+            updateUI();
+            checkWin();
+        }
+
+        function checkWin() {
+            const allRevealed = tiles.every(t => t.userData.isRevealed || t.userData.isMine);
+            if (allRevealed && !gameOver) endGame(true);
+        }
+
+        function endGame(win) {
+            gameOver = true;
+            const status = document.getElementById('status');
+            status.textContent = win ? '🎉 Победа!' : '💥 Взрыв! Игра окончена';
+            status.style.background = win ? 'rgba(40,140,60,0.9)' : 'rgba(180,30,30,0.9)';
+            status.classList.add('show');
+
+            if (!win) {
+                for (const tile of tiles) {
+                    if (tile.userData.isMine && !tile.userData.isFlagged && !tile.userData.isRevealed) {
+                        tile.material = mineMaterial.clone();
+                        tile.userData.isRevealed = true;
+                    }
+                }
+            }
+        }
+
+        const coreGeo = new THREE.SphereGeometry(R * 0.985, 64, 48);
+        const coreMat = new THREE.MeshStandardMaterial({
+            color: 0x1a2540, roughness: 0.9, metalness: 0.1,
+            emissive: 0x061020, emissiveIntensity: 0.8
+        });
+        const core = new THREE.Mesh(coreGeo, coreMat);
+        scene.add(core);
+
+        const starGeo = new THREE.BufferGeometry();
+        const starCount = 1500;
+        const starPositions = new Float32Array(starCount * 3);
+        for (let i = 0; i < starCount * 3; i += 3) {
+            const r = 40 + Math.random() * 120;
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            starPositions[i] = r * Math.sin(phi) * Math.cos(theta);
+            starPositions[i+1] = r * Math.cos(phi);
+            starPositions[i+2] = r * Math.sin(phi) * Math.sin(theta);
+        }
+        starGeo.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+        const starMat = new THREE.PointsMaterial({ color: 0xffffff, size: 0.35, transparent: true, opacity: 0.85 });
+        const stars = new THREE.Points(starGeo, starMat);
+        scene.add(stars);
+
+        const raycaster = new THREE.Raycaster();
+        const pointer = new THREE.Vector2();
+        let pointerDown = false;
+        let pointerStart = { x: 0, y: 0 };
+
+        renderer.domElement.addEventListener('pointerdown', (event) => {
+            if (event.button !== 0 && event.button !== 2) return;
+            pointerDown = true;
+            pointerStart.x = event.clientX;
+            pointerStart.y = event.clientY;
+
+            if (event.button === 2) {
+                const rect = renderer.domElement.getBoundingClientRect();
+                pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+                pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+                raycaster.setFromCamera(pointer, camera);
+                const intersects = raycaster.intersectObjects(tiles, false);
+                if (intersects.length > 0) toggleFlag(intersects[0].object);
+                pointerDown = false;
+            }
+        });
+
+        renderer.domElement.addEventListener('pointerup', (event) => {
+            if (!pointerDown) return;
+            pointerDown = false;
+            if (event.button !== 0) return;
+
+            const dx = event.clientX - pointerStart.x;
+            const dy = event.clientY - pointerStart.y;
+            if (dx * dx + dy * dy > 25) return;
+
+            const rect = renderer.domElement.getBoundingClientRect();
+            pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+            pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+            raycaster.setFromCamera(pointer, camera);
+            const intersects = raycaster.intersectObjects(tiles, false);
+
+            if (intersects.length > 0) {
+                const tile = intersects[0].object;
+                if (flagMode) toggleFlag(tile);
+                else {
+                    if (tile.userData.isRevealed) chordTile(tile);
+                    else revealTile(tile);
+                }
+            }
+        });
+
+        renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
+
+        document.getElementById('resetBtn').addEventListener('click', () => resetGame());
+        document.getElementById('flagMode').addEventListener('change', (e) => { flagMode = e.target.checked; });
+
+        document.getElementById('latRange').addEventListener('input', (e) => {
+            LAT_SEGMENTS = Math.max(6, parseInt(e.target.value));
+            document.getElementById('latVal').textContent = LAT_SEGMENTS;
+            resetGame();
+        });
+        document.getElementById('lonRange').addEventListener('input', (e) => {
+            LON_SEGMENTS = Math.max(6, parseInt(e.target.value));
+            document.getElementById('lonVal').textContent = LON_SEGMENTS;
+            resetGame();
+        });
+        document.getElementById('mineRange').addEventListener('input', (e) => {
+            MINE_RATIO = parseInt(e.target.value) / 100;
+            document.getElementById('mineVal').textContent = e.target.value;
+            resetGame();
+        });
+
+        window.addEventListener('resize', onWindowResize, false);
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        let autoRotate = true;
+        controls.addEventListener('start', () => { autoRotate = false; });
+
+        function animate() {
+            requestAnimationFrame(animate);
+            if (autoRotate) {
+                tilesGroup.rotation.y += 0.0012;
+                core.rotation.y += 0.0012;
+            }
+            controls.update();
+            stars.rotation.y += 0.00008;
+            renderer.render(scene, camera);
+        }
+
+        resetGame();
+        animate();
+    </script>
+</body>
+</html>
