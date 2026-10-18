@@ -1,3 +1,2 @@
 # sphere-minesweeper
-"Minesweeper" game in the form of a sphere
-vibecoded
+"Minesweeper" game in the form of a sphere. Vibecoded
